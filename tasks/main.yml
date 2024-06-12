@@ -1,0 +1,120 @@
+---
+# tasks file for openplc
+- name: Install python3, pip3, git
+  become: true
+  ansible.builtin.apt:
+    name: python3, python3-pip, git
+    update_cache: true
+
+- name: Clone OpenPLC repository
+  become: true
+  ansible.builtin.git:
+    repo: https://github.com/thiagoralves/OpenPLC_v3.git
+    dest: '{{ openplc_deploy_dir }}'
+    version: '{{ openplc_branch }}'
+    update: false
+
+- name: Install pip requirements
+  become: true
+  ansible.builtin.pip:
+    requirements: '{{ openplc_deploy_dir }}/requirements.txt'
+
+- name: Check install marker
+  ansible.builtin.stat:
+    path: '{{ openplc_deploy_dir }}/start_openplc.sh'
+  register: openplc_installed_marker
+
+- name: Run ./install.sh to install OpenPLC_v3
+  become: true
+  ansible.builtin.command: ./install.sh linux
+  args:
+    chdir: '{{ openplc_deploy_dir }}'
+  when: not openplc_installed_marker.stat.exists or openplc_install_force
+  changed_when: false
+
+- name: Copy st template files to remote host
+  become: true
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ openplc_deploy_dir }}/webserver/st_files/{{ item.dest }}'
+    mode: '0644'
+  loop: '{{ openplc_st_files }}'
+  notify: Restart openplc
+
+- name: Check hardware layer
+  become: true
+  ansible.builtin.stat:
+    path: '{{ openplc_deploy_dir }}/webserver/scripts/openplc_driver'
+    get_checksum: true
+    checksum_algorithm: md5
+  register: _hardware_layer
+
+- name: Configure hardware layer
+  become: true
+  ansible.builtin.command:
+    cmd: ./change_hardware_layer.sh "{{ openplc_hardware_layer }}"
+  when: _hardware_layer.stat.checksum != openplc_hardware_layer_md5
+  changed_when: false
+  notify: Restart openplc
+  args:
+    chdir: '{{ openplc_deploy_dir }}/webserver/scripts'
+
+- name: Compile active PLC program
+  become: true
+  ansible.builtin.command:
+    cmd: ./compile_program.sh "{{ openplc_active_program }}"
+  when:
+    openplc_active_program is defined and openplc_active_program | length > 0
+  changed_when: false
+  notify: Restart openplc
+  args:
+    chdir: '{{ openplc_deploy_dir }}/webserver/scripts'
+
+- name: Copy openplc config files to remote host
+  become: true
+  ansible.builtin.copy:
+    src: '{{ item.src }}'
+    dest: '{{ openplc_deploy_dir }}/{{ item.dest }}'
+    mode: '0644'
+  loop: '{{ openplc_config_files }}'
+  notify: Restart openplc
+
+- name: Copy openplc template files to remote host
+  become: true
+  ansible.builtin.template:
+    src: '{{ item.src }}'
+    dest: '{{ openplc_deploy_dir }}/{{ item.dest }}'
+    mode: '0644'
+  loop: '{{ openplc_config_templates }}'
+  notify: Restart openplc
+
+- name: Copy over users CSV file
+  become: true
+  ansible.builtin.template:
+    src: '{{ openplc_users_csv_template }}'
+    dest: '{{ openplc_users_csv_template_dest }}'
+    mode: '0644'
+  when: openplc_users | length > 0
+
+- name: Import openplc users table
+  become: true
+  ansible.builtin.command:
+    cmd:
+      sqlite3 "{{ openplc_deploy_dir }}/webserver/openplc.db" -cmd "delete from
+      Users" ".mode csv" ".import {{ openplc_users_csv_template_dest }} Users"
+  changed_when: false
+  when: openplc_users | length > 0
+
+- name: Remove users CSV file
+  become: true
+  ansible.builtin.file:
+    path: '{{ openplc_users_csv_template_dest }}'
+    state: absent
+  when: openplc_users | length > 0
+
+- name: Ensure openplc is running
+  become: true
+  ansible.builtin.service:
+    name: openplc
+    state: started
+    enabled: true

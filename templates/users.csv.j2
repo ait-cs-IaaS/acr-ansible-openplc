@@ -1,0 +1,5 @@
+{% set _uid_base = 10 %}
+{% for _user in openplc_users %}
+{{ _uid_base + loop.index }},"{{ _user.name }}","{{ _user.username }}","{{ _user.email }}","{{ _user.password }}",{% if _user.openplc_pic_file is defined %}"{{  _user.openplc_pic_file }}"{% else %}NULL{% endif %}
+
+{% endfor %}
